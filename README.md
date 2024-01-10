@@ -1,4 +1,4 @@
-# Automatic-IOT-Plant-Watering-System
+# Automatic IOT Plant Watering System
 
 - Developed an automated plant care system using C++, Arduino, and machine learning.
 - Implemented logistic regression and KNN algorithms to analyse sensor data and calculate optimal watering schedules.
