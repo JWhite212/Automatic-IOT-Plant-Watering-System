@@ -74,11 +74,11 @@
 // ==== GLOBALS ===================================================================================
 String ssid;     // Set your own SSID
 String password; // Set your own WiFi password
-// ThingSpeak information
+// ThingSpeak information. Credentials are loaded from Preferences (NVS) in setup().
 char thingSpeakAddress[] = "api.thingspeak.com";
-unsigned long channelID = 2073592;
-const char *readAPIKey = "MM2WIMUEIAVZ3E0U";
-const char *writeAPIKey = "TJ1SO2U076DFZUXS";
+unsigned long channelID = 0;
+String readAPIKey;
+String writeAPIKey;
 const unsigned long postingInterval = TASK_SECOND * 30;
 unsigned int tempFieldNo = 1;                // Field to write temperature (*c) data
 unsigned int humidityFieldNo = 2;            // Field to write humidity (%) data
@@ -135,8 +135,17 @@ int LastPumpMonth;
 int LastPumpDay;
 int LastPumpHours;
 int LastPumpMinutes;
-int LastPumpUnixSeconds;
-int currentUnixSeconds;
+long LastPumpUnixSeconds;
+long currentUnixSeconds;
+
+// Calibration and safety constants. MOISTURE_ADC_* preserve the original
+// map() endpoints from the calibration routine: ADC 2500 -> 0%, ADC 6000 -> 100%.
+const int MOISTURE_ADC_ZERO_PCT = 2500;
+const int MOISTURE_ADC_FULL_PCT = 6000;
+const int WATER_TANK_FULL_CM = 1;       // Distance from sensor when tank is full
+const int WATER_TANK_EMPTY_CM = 33;     // Distance from sensor when tank is empty
+const int MIN_WATER_TANK_PERCENT = 5;   // Minimum tank level before pump is inhibited
+const int PUMP_COOLDOWN_HOURS = 12;     // Minimum hours between successive pump activations
 // Variables for the timing of the wifi connection, to break out of the loop
 unsigned long startMillis;
 unsigned long currentMillis;
@@ -169,7 +178,6 @@ StatusRequest screenValues;
 // ==== Scheduler ==============================
 Scheduler ts;
 
-void tickerCallback();
 void tickerCallback();
 
 bool tickerEnable();
@@ -278,6 +286,14 @@ void setup() {
 
   ssid = preferences.getString("ssid", "");
   password = preferences.getString("password", "");
+
+  channelID = preferences.getULong("tsChannel", 0);
+  writeAPIKey = preferences.getString("tsWriteKey", "");
+  readAPIKey = preferences.getString("tsReadKey", "");
+
+  if (channelID == 0 || writeAPIKey.length() == 0 || readAPIKey.length() == 0) {
+    Serial.println("No values saved for ThingSpeak credentials - cloud telemetry disabled");
+  }
 
   if (ssid == "" || password == "") {
     Serial.println("No values saved for ssid or password");
@@ -394,7 +410,7 @@ void setup() {
   // Check if DHT11 Sensor is reading
   if (isnan(humidity1) || isnan(temperature1)) {
     Serial.println("ERROR: Failed to read from DHT sensor1!");
-    bool dhtCheck = false;
+    dhtCheck = false;
   } else {
     dhtCheck = true;
   }
@@ -402,7 +418,7 @@ void setup() {
   // Check if DHT11 Sensor is reading
   if (isnan(humidity2) || isnan(temperature2)) {
     Serial.println("ERROR: Failed to read from DHT sensor2!");
-    bool dhtCheck = false;
+    dhtCheck = false;
   } else {
     dhtCheck = true;
   }
@@ -552,7 +568,6 @@ bool S1Enable() {
 void S1Callback() {
   if (isnan(humidity1) || isnan(temperature1)) {
     Serial.println("ERROR: Failed to read from DHT sensor1!");
-    bool dhtCheck = false;
     Serial.println("Restarting Sensor 1!");
     tSensor1.restart();
     return;
@@ -582,7 +597,6 @@ bool S2Enable() {
 void S2Callback() {
   if (isnan(humidity2) || isnan(temperature2)) {
     Serial.println("ERROR: Failed to read from DHT sensor2!");
-    bool dhtCheck = false;
     Serial.println("Restarting Sensor 2!");
     tSensor2.restart();
     return;
@@ -661,20 +675,20 @@ void setClock() {
     nowSecs = time(nullptr);
   }
 
-  int LastPumpUnixSecondsDownload = ThingSpeak.readIntField(channelID, 4, "MM2WIMUEIAVZ3E0U");
-  if (LastPumpUnixSecondsDownload == LastPumpUnixSeconds) {
-    // do nothing
-  } else {
-    LastPumpUnixSeconds = LastPumpUnixSecondsDownload;
-    Serial.println("------------------------------------------------");
-    Serial.println("Reading Last Pump Time from ThingSpeak!");
-    preferences.remove("pumpTime");
-    size_t size = preferences.putUInt("pumpTime", LastPumpUnixSeconds);
-    Serial.println(LastPumpUnixSeconds);
-    Serial.println("= Last pump time flashed to ESP32 flash memory!");
-    Serial.print("Size = ");
-    Serial.println(size);
-    Serial.println("------------------------------------------------");
+  if (channelID != 0 && readAPIKey.length() > 0) {
+    long LastPumpUnixSecondsDownload = ThingSpeak.readIntField(channelID, 4, readAPIKey.c_str());
+    if (LastPumpUnixSecondsDownload != LastPumpUnixSeconds) {
+      LastPumpUnixSeconds = LastPumpUnixSecondsDownload;
+      Serial.println("------------------------------------------------");
+      Serial.println("Reading Last Pump Time from ThingSpeak!");
+      preferences.remove("pumpTime");
+      size_t size = preferences.putUInt("pumpTime", LastPumpUnixSeconds);
+      Serial.println(LastPumpUnixSeconds);
+      Serial.println("= Last pump time flashed to ESP32 flash memory!");
+      Serial.print("Size = ");
+      Serial.println(size);
+      Serial.println("------------------------------------------------");
+    }
   }
 
   printTime();
@@ -781,14 +795,14 @@ bool setupMoistureReadings() {
   return true;
 }
 
-// Function to check Soil Moisture Sensor Readings, performing actions as necassary
+// Function to check Soil Moisture Sensor Readings, performing actions as necessary
 void checkSoilMoistThreshold() {
-  moisture_value1 = analogRead(moisture_sensor_pin1);         // gets the value from the soil moisture sensor
-  moisture_value1 = map(moisture_value1, 2500, 6000, 0, 100); // this sets the percentage value
-  moisture_value2 = analogRead(moisture_sensor_pin2);         // gets the value from the soil moisture sensor
-  moisture_value2 = map(moisture_value2, 2500, 6000, 0, 100); // this sets the percentage value
-  moisture_value3 = analogRead(moisture_sensor_pin3);         // gets the value from the soil moisture sensor
-  moisture_value3 = map(moisture_value3, 2500, 6000, 0, 100); // this sets the percentage value
+  moisture_value1 = analogRead(moisture_sensor_pin1);
+  moisture_value1 = map(moisture_value1, MOISTURE_ADC_ZERO_PCT, MOISTURE_ADC_FULL_PCT, 0, 100);
+  moisture_value2 = analogRead(moisture_sensor_pin2);
+  moisture_value2 = map(moisture_value2, MOISTURE_ADC_ZERO_PCT, MOISTURE_ADC_FULL_PCT, 0, 100);
+  moisture_value3 = analogRead(moisture_sensor_pin3);
+  moisture_value3 = map(moisture_value3, MOISTURE_ADC_ZERO_PCT, MOISTURE_ADC_FULL_PCT, 0, 100);
 
   if (Debug) {
     Serial.print("Soil moisture: ");
@@ -822,8 +836,6 @@ void checkSoilMoistThreshold() {
   }
 }
 
-void checkSoilMoistThresholdWhenWatering() {}
-
 bool pumpCallbackEnableOn() {
 
   DateTime now = rtc.now();
@@ -852,30 +864,24 @@ bool pumpCallbackEnableOn() {
     return false;
   }
 
-  if ((currentUnixSeconds - LastPumpUnixSeconds) / 3600 < 12) {
-    Serial.print(" Watering triggered too soon after last ");
-    Serial.print((currentUnixSeconds - LastPumpUnixSeconds) / 3600);
-    Serial.println(" Hours since ");
+  long hoursSincePump = (currentUnixSeconds - LastPumpUnixSeconds) / 3600;
+  if (hoursSincePump < PUMP_COOLDOWN_HOURS) {
+    Serial.print("Watering skipped - only ");
+    Serial.print(hoursSincePump);
+    Serial.print(" hours since last pump (cooldown ");
+    Serial.print(PUMP_COOLDOWN_HOURS);
+    Serial.println("h)");
     return false;
-  } else if ((currentUnixSeconds - LastPumpUnixSeconds) / 3600 < 60) {
-    Serial.print(" Watering triggered too soon after last ");
-    Serial.print((currentUnixSeconds - LastPumpUnixSeconds) / 3600);
-    Serial.println(" Hours since ");
-    return false;
-  } else if ((currentUnixSeconds - LastPumpUnixSeconds) / 3600 < 84) {
-    Serial.print(" Watering triggered too soon after last ");
-    Serial.print((currentUnixSeconds - LastPumpUnixSeconds) / 3600);
-    Serial.println(" Hours since ");
-    return false;
-  } else if (waterTankLevel < 5) {
+  }
+
+  if (waterTankLevel < MIN_WATER_TANK_PERCENT) {
     Serial.print("Water tank level too low to water without burning out pump: ");
     Serial.print(waterTankLevel);
     Serial.println("% ");
     return false;
-  } else {
-    Serial.println("Activating Pump!");
   }
 
+  Serial.println("Activating Pump!");
   return true;
 }
 
@@ -921,11 +927,10 @@ void pumpCallback() {
   }
 
   digitalWrite(pumpPin, LOW);
-  Serial.println("Pump on for 4 second");
-  delay(4000); // run pump for 10 second;
+  Serial.println("Pump on for 4 seconds");
+  delay(4000);
   digitalWrite(pumpPin, HIGH);
   Serial.println("Pump off, Waiting 60 minutes to retake Moisture readings");
-  //    delay(300000); //wait 5 minutes before checking again
 }
 
 void pumpCallbackEnableOff() { digitalWrite(pumpPin, HIGH); }
@@ -1033,35 +1038,39 @@ void ultrasonicOnDisable() {
   Serial.println(" cm to");
   Serial.print("Water Tank Percentage:");
 
-  if (distance > 33) {
-    Serial.println("Water level is > 33cm which is an invalid value");
+  if (distance > WATER_TANK_EMPTY_CM) {
+    Serial.print("Water level is > ");
+    Serial.print(WATER_TANK_EMPTY_CM);
+    Serial.println("cm which is an invalid value");
     tReadUltrasonic.restart();
   } else if (distance < 0) {
     Serial.println("Water level is < 0cm which is an invalid value");
     tReadUltrasonic.restart();
   }
 
-  waterTankLevel = map(distance, 1, 33, 100, 0); // this sets the percentage value
+  waterTankLevel = map(distance, WATER_TANK_FULL_CM, WATER_TANK_EMPTY_CM, 100, 0);
   Serial.print(waterTankLevel);
   Serial.println("%");
 }
 
 // Function for Writing Sensor Data to ThingSpeak Fields
 void WriteDataToThingSpeak() {
+  if (channelID == 0 || writeAPIKey.length() == 0) {
+    Serial.println("ThingSpeak credentials missing - skipping telemetry upload");
+    return;
+  }
+
   ThingSpeak.setField(tempFieldNo, avg_temperature);
   ThingSpeak.setField(humidityFieldNo, avg_humidity);
-
   ThingSpeak.setField(soilMoistureFieldNo, moistureAvg.get());
-
   ThingSpeak.setField(luxLevelsFieldNo, luxAverage.get());
-
   ThingSpeak.setField(waterTankLevelsFieldNo, waterTankLevel);
+  ThingSpeak.setField(pumpActivationTimeFieldNo, (long)LastPumpUnixSeconds);
 
-  ThingSpeak.setField(4, LastPumpUnixSeconds);
-
-  int writeSuccess = ThingSpeak.writeFields(channelID, writeAPIKey);
+  int writeSuccess = ThingSpeak.writeFields(channelID, writeAPIKey.c_str());
 
   Serial.println("------------------------------------------------");
-  Serial.println("Writing Sensor Data to ThingSpeak!");
+  Serial.print("Writing Sensor Data to ThingSpeak! Status: ");
+  Serial.println(writeSuccess);
   Serial.println("------------------------------------------------");
 }
