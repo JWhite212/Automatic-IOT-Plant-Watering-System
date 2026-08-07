@@ -10,6 +10,10 @@
 
 #pragma once
 
+// Pulled in here rather than only in the .cpp: the horizon and threshold are
+// part of describing what a prediction means, so callers need them too.
+#include "MoistureMLModel.h"
+
 namespace plantwater {
 
 struct MoistureFeatures {
