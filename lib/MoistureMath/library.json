@@ -1,0 +1,10 @@
+{
+  "name": "MoistureMath",
+  "version": "1.0.0",
+  "description": "Pure-C++ soil-moisture and tank calibration helpers, native-testable.",
+  "keywords": ["plant", "moisture", "calibration"],
+  "authors": [{"name": "Jamie White"}],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*"
+}

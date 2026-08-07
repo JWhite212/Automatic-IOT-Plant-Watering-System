@@ -1,0 +1,11 @@
+{
+  "name": "MoistureML",
+  "version": "1.0.0",
+  "description": "On-device logistic-regression forecast for soil moisture watering decisions.",
+  "keywords": ["tinyml", "logistic-regression", "plant"],
+  "authors": [{"name": "Jamie White"}],
+  "license": "MIT",
+  "dependencies": {"MoistureMath": "*"},
+  "frameworks": "*",
+  "platforms": "*"
+}
