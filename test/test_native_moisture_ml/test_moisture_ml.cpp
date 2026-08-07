@@ -26,6 +26,14 @@ MoistureFeatures baseline() {
 void setUp() {}
 void tearDown() {}
 
+// main.cpp includes only MoistureML.h but reads these constants, so the public
+// header has to re-export them. Guards against the include regressing.
+void test_model_constants_are_visible_via_public_header() {
+    TEST_ASSERT_GREATER_THAN_INT(0, plantwater::MOISTURE_ML_HORIZON_HOURS);
+    TEST_ASSERT_TRUE(plantwater::MOISTURE_ML_THRESHOLD > 0.0f &&
+                     plantwater::MOISTURE_ML_THRESHOLD < 1.0f);
+}
+
 void test_prediction_is_a_valid_probability() {
     const float p = predictNeedsWaterSoon(baseline());
     TEST_ASSERT_TRUE(p >= 0.0f && p <= 1.0f);
@@ -92,6 +100,7 @@ void test_negative_lux_is_treated_as_zero() {
 
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_model_constants_are_visible_via_public_header);
     RUN_TEST(test_prediction_is_a_valid_probability);
     RUN_TEST(test_wet_soil_predicts_low_probability);
     RUN_TEST(test_dry_hot_sunny_stale_predicts_high_probability);
