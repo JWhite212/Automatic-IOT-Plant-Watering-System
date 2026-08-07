@@ -44,6 +44,8 @@
 
 #include <ThingSpeak.h>
 #include <Arduino.h>
+
+#include <MoistureML.h>
 // ==== Uncomment desired compile options =================================
 // ----------------------------------------
 // The following "defines" control library functionality at compile time,
@@ -87,6 +89,7 @@ unsigned int pumpActivationTimeFieldNo = 4;  // Field to write pump activation t
 unsigned int LightActivationTimeFieldNo = 5; // Field to write Light Activation time data
 unsigned int luxLevelsFieldNo = 6;           // Field to write Light levels (Lux) data
 unsigned int waterTankLevelsFieldNo = 7;     // Field to write Water tank levels (%) data
+unsigned int dryForecastFieldNo = 8;         // Field to write the on-device dry-out forecast (0..1)
 
 unsigned long lastConnectionTime = 0;
 long lastUpdateTime = 0;
@@ -789,6 +792,36 @@ bool checkTimeThreshold() {
 }
 
 MovingAveragePlus<float> moistureAvg(45);
+MovingAveragePlus<float> luxAverage(9);
+
+// Latest on-device logistic-regression forecast: P(soil drops below the pump
+// threshold within MOISTURE_ML_HORIZON_HOURS). Published to ThingSpeak field 8.
+float dryOutProbability = 0.0f;
+
+// Runs the on-device model over the current sensor snapshot. Advisory only —
+// the moisture threshold and the cooldown / tank-level guards still own the
+// decision to actually run the pump.
+void updateDryOutForecast() {
+  plantwater::MoistureFeatures features;
+  features.moisturePct = moistureCombinedAvg;
+  features.temperatureC = avg_temperature;
+  features.humidityPct = avg_humidity;
+  features.luxRaw = luxAverage.get();
+
+  // Read the RTC directly rather than reusing currentUnixSeconds, which is only
+  // refreshed when the pump task runs and would otherwise be stale here.
+  const long nowUnix = rtc.now().unixtime();
+  features.hoursSinceWater =
+      LastPumpUnixSeconds > 0 ? (nowUnix - LastPumpUnixSeconds) / 3600.0f : 0.0f;
+
+  dryOutProbability = plantwater::predictNeedsWaterSoon(features);
+
+  Serial.print("Dry-out forecast (next ");
+  Serial.print(plantwater::MOISTURE_ML_HORIZON_HOURS);
+  Serial.print("h): ");
+  Serial.print(dryOutProbability * 100.0f);
+  Serial.println("%");
+}
 
 bool setupMoistureReadings() {
   digitalWrite(pumpPin, HIGH);
@@ -823,6 +856,7 @@ void checkSoilMoistThreshold() {
   moistureAvg.push(moisture_value3);
   if (tReadMoisture.getRunCounter() % 16 == 0) {
     moistureCombinedAvg = moistureAvg.get();
+    updateDryOutForecast();
     if (moistureCombinedAvg < moistureThreshold) // if the soil is dry then pump out water for 10 second
     {
       Serial.print("Avg Soil moisture: ");
@@ -934,8 +968,6 @@ void pumpCallback() {
 }
 
 void pumpCallbackEnableOff() { digitalWrite(pumpPin, HIGH); }
-
-MovingAveragePlus<float> luxAverage(9);
 
 // Checks Lux Value
 void checkBH1750Callback() {
@@ -1066,6 +1098,7 @@ void WriteDataToThingSpeak() {
   ThingSpeak.setField(luxLevelsFieldNo, luxAverage.get());
   ThingSpeak.setField(waterTankLevelsFieldNo, waterTankLevel);
   ThingSpeak.setField(pumpActivationTimeFieldNo, (long)LastPumpUnixSeconds);
+  ThingSpeak.setField(dryForecastFieldNo, dryOutProbability);
 
   int writeSuccess = ThingSpeak.writeFields(channelID, writeAPIKey.c_str());
 
